@@ -138,12 +138,18 @@ Write out what a full user interaction looks like from start to finish — tool 
 
 **Step 1:**
 <!-- What does the agent do first? Which tool is called? With what input? -->
+Agent request for search_listings("vintage graphic tee", size="M", max_price=30.0). If tool call success but empty result set, then prompt user to try something different since requested item (or typo) doesn't match any in the sample listings. If tool call failed, then report error back to user.
 
 **Step 2:**
 <!-- What happens next? What was returned from step 1? What tool is called now? -->
+Take the item id returned from step 1 and call suggest_outfit(new_item=<band_tee_id_from_search_listings>, wardrobe=<user's_wardrobe_schema_with_baggy_jean_and_chunky_sneakers>). 
+Since suggestion will be fueled by llm using different promptd, empty response or failure suggests issues on llm side and should report error to user that the tool is unable to generate suggestion at the time, but here are the available thrift items that you have requested.
 
 **Step 3:**
 <!-- Continue until the full interaction is complete -->
+The outfit suggestion from step 2 would be sufficient is the user is only looking for suggestion and not planning on sharing or posting the outfit anywhere. 
+Otherwise, if the user would like to share the outlet, then agent calls create_fit_card(outfit=<step_2_suggestion>, new_item=<band_tee_from_step_1>). Same error handling as step 2 as this tool will be mostly a llm call with a prompt.
 
 **Final output to user:**
 <!-- What does the user actually see at the end? -->
+Either the raw outfit suggestion from step 2 for more personal use or the outfit card string from step 3 that can be shared. 
