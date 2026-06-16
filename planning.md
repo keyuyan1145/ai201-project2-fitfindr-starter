@@ -160,14 +160,59 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 ## Architecture
 
-<!-- Draw a diagram of your agent showing how the components connect:
-     User input → Planning Loop → Tools (search_listings, suggest_outfit, create_fit_card)
-                                                                          ↕
-                                                                   State / Session
-     Show what triggers each tool, how state flows between them, and where error paths branch off.
-     ASCII art, a Mermaid diagram (https://mermaid.js.org/syntax/flowchart.html), or an embedded
-     sketch are all fine. You'll share this diagram with an AI tool when asking it to implement
-     the planning loop and each individual tool. -->
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │                       Session State                          │
+  │  messages · parsed · search_results · selected_item          │
+  │  wardrobe · outfit_suggestion · fit_card · error             │
+  └──────────────────────────┬──────────────────────────────────┘
+                             │ read / write
+  ┌──────────┐  user msg    ┌▼─────────────────────────────────┐
+  │   User   │ ────────────►│    run_agent  (Planning Loop)    │
+  │          │ ◄──────────── └─────────────────┬───────────────┘
+  └──────────┘  text/error                     │
+                                               │ messages + tools
+                                               ▼
+                                      ┌─────────────────┐
+                                      │   LLM (Groq)    │
+                                      └────────┬────────┘
+                                               │
+                                  ┌────────────┴─────────────┐
+                                  │                          │
+                            tool_call_list              plain text
+                                  │                          │
+                                  ▼                    return to User
+                           dispatch_tool()
+                                  │
+             ┌────────────────────┼──────────────────────┐
+             │  (conditional)     │  (conditional)        │  (conditional)
+             ▼                    ▼                       ▼
+  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+  │ search_listings  │  │  suggest_outfit  │  │ create_fit_card  │
+  │  filter + rank   │  │    Groq LLM      │  │    Groq LLM      │
+  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
+           │                     │                      │
+        ┌──┴──┐               ┌──┴──┐                ┌──┴──┐
+        │     │               │     │                │     │
+     empty  result          fail  result           fail  result
+     list     │               │     │                │     │
+       │      │               ▼     │                ▼     │
+       ▼      │          [error]    │           [error]    │
+  [error]     │          partial    │           partial    │
+  return      │          return     │           return     │
+  early       │          (item      │           (item +    │
+  ───────     │           shown)    │            outfit    │
+              ▼                     ▼            shown)    ▼
+       session["search_results"] session["outfit_suggestion"] session["fit_card"]
+       → append to messages      → append to messages     → append to messages
+       → loop back to LLM        → loop back to LLM       → loop back to LLM
+```
+
+**Notes:**
+- All three tools are **conditional** — only dispatched if the LLM includes them in `tool_call_list` based on user intent.
+- `suggest_outfit` requires `selected_item` in session; `create_fit_card` requires `outfit_suggestion`.
+- Single search result: auto-set as `selected_item`, fed back to LLM to decide next step without user prompt.
+- Session reset on retry: before dispatching a retried tool, clear that tool's output and all downstream fields. `messages` and `wardrobe` are never cleared.
 
 ---
 
