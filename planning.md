@@ -17,17 +17,21 @@ You must have at least 3 tools. The three required tools are listed — add any 
 **What it does:**
 <!-- Describe what this tool does in 1–2 sentences -->
 
+For the user requested item, search in the data listings for list of matching items filtered by size and prie if provided and sorted by most relevance.
+
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `description` (str): ...
-- `size` (str): ...
-- `max_price` (float): ...
+- `description` (str): keywords, descriptions for the items, will match against description field on the listing based on number of keyword matches. 
+- `size` (str): specify the requested size, will be substring match after sanitizing string and consider case sensitivity.
+- `max_price` (float): max price for the item, including the max price itself. This will act like a filter and the result set must contain all items less than or equal to this price.
 
 **What it returns:**
 <!-- Describe the return value — what fields does a result contain? -->
+Return list of items (raw item listing in the data set) sorted by most relevance. 
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if no listings match? -->
+No listing match will prompt to user to try something different as previous request did not match with any listing in data set.
 
 ---
 
@@ -35,17 +39,20 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **What it does:**
 <!-- Describe what this tool does in 1–2 sentences -->
+This tool takes the new item dictionary that the user is looking to purchase and dictionary containing what's available in user's existing wardrobe to suggest an outfit.
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `new_item` (dict): ...
-- `wardrobe` (dict): ...
+- `new_item` (dict): one of the items returned from search_listings() that the user is looking to purchase. 
+- `wardrobe` (dict): dictionary containing list of items in the user's wardrobe that the user would like to form an outlet with the new item looking to purchase. 
 
 **What it returns:**
 <!-- Describe the return value -->
+String suggestin outfit for the new item looking to purchase that matches with the existing user's wardrobe. If user wardrobe is empty, return string offering general styling advice for the new item.
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if the wardrobe is empty or no outfit can be suggested? -->
+If wardrobe is empty or no outfit can be suggested, offer general styling advice for the new item looking to purchase.
 
 ---
 
@@ -53,16 +60,24 @@ You must have at least 3 tools. The three required tools are listed — add any 
 
 **What it does:**
 <!-- Describe what this tool does in 1–2 sentences -->
+Generate a short, sharable blog content from the suggested outfit and the item user is looking to purchase. 
 
 **Input parameters:**
 <!-- List each parameter, its type, and what it represents -->
-- `outfit` (...): ...
+- `outfit` (str): string description for the suggested outfit returned by suggest_outfit()
+- `new_item` (dict): item user looking to purchase and form outfit with, returned from search_listings()
 
 **What it returns:**
 <!-- Describe the return value -->
+Shareable blog content about the suggested outfit possible from the thrifted item, and includes the following requirements:
+- casual and authentic tone
+- include itemname, price, and platform naturally
+- capture outfit vibe
+- different output for different inputs (user higher LLM temperature)
 
 **What happens if it fails or returns nothing:**
 <!-- What should the agent do if the outfit data is incomplete? -->
+Return a descriptive error message string to user.
 
 ---
 
@@ -75,14 +90,57 @@ You must have at least 3 tools. The three required tools are listed — add any 
 ## Planning Loop
 
 **How does your agent decide which tool to call next?**
-<!-- Describe the logic your planning loop uses. What does it look at? What conditions change its behavior? How does it know when it's done? -->
+
+The planning loop is LLM-driven. On every user message turn, `run_agent` appends the user message to `session["messages"]` and calls the LLM with the full message history and all three tools exposed. The LLM response determines the next action:
+
+- **If the LLM returns a `tool_call_list`:** `run_agent` dispatches each call via `dispatch_tool()`, appends the tool results back to `session["messages"]`, then calls the LLM again with the updated history. This repeats until the LLM returns plain text with no further tool calls.
+- **If the LLM returns plain text (no tool calls):** `run_agent` returns the text to the user and waits for the next input. The session persists across turns so context is preserved.
+
+**All three tools are conditional** — the LLM only calls a tool if the user's intent warrants it:
+
+- `search_listings` is called when the user asks to find or browse items.
+- `suggest_outfit` is called only if the user asks for styling or outfit advice — not every search needs one. It requires `selected_item` to already be set in the session.
+- `create_fit_card` is called only if the user signals intent to share or post (e.g., "make a caption", "share this fit"). It requires `outfit_suggestion` to already be in the session.
+
+**Tool ordering is strictly enforced** by the system prompt and input dependencies — the LLM is instructed never to call a later tool without the prior tool's output available in the session:
+
+1. LLM first extracts `description`, `size`, and `max_price` from the user query and saves them to `session["parsed"]` before calling `search_listings`.
+2. After `search_listings` returns:
+   - **Multiple results:** present the list to the user and wait for them to select an item. `session["selected_item"]` is saved once the user confirms their choice.
+   - **Single result:** auto-select it as `session["selected_item"]` without prompting the user. Feed the item directly back to the LLM (not as a user-facing message) and let the LLM decide whether to call `suggest_outfit` immediately (if the original prompt included styling intent) or surface the result to the user first.
+3. `suggest_outfit` must complete and its result stored in `session["outfit_suggestion"]` before `create_fit_card` can be called.
+
+On any tool or LLM failure, `run_agent` sets `session["error"]` and returns immediately — the LLM does not continue calling further tools or attempt to fill in missing results.
+
+**Session reset on retry:** When a new user message arrives after a prior error, there is no full session wipe. Instead, `run_agent` clears only the fields downstream of whichever tool the LLM decides to retry, scoped by dependency:
+
+- LLM retries `search_listings` → clears `parsed`, `search_results`, `selected_item`, `outfit_suggestion`, `fit_card`, `error`
+- LLM retries `suggest_outfit` → clears `outfit_suggestion`, `fit_card`, `error`
+- LLM retries `create_fit_card` → clears `fit_card`, `error`
+
+The LLM already has the full message history including the prior error, so it naturally determines how far back to retry. `session["messages"]` and `session["wardrobe"]` are never cleared — they persist for the entire user session.
 
 ---
 
 ## State Management
 
 **How does information from one tool get passed to the next?**
-<!-- Describe how your agent stores and accesses state within a session. What data is tracked? How is it passed between tool calls? -->
+
+All state is stored in the session dict created by `_new_session()` at the start of a **user session** — once per conversation, not once per `run_agent` call. The same session persists across multiple user prompts so that a user can search in one message and ask for outfit advice in a later message without losing prior context. `run_agent` receives the existing session and updates it in place each turn.
+
+Tools never call each other directly. `run_agent` reads from the session to build each tool's inputs and writes results back after each `dispatch_tool()` call.
+
+| Field | Set when | Purpose |
+|-------|----------|---------|
+| `query` | Session init | Original user query for reference |
+| `messages` | Every turn | Full conversation history passed to LLM on each call; enables multi-turn context |
+| `parsed` | After LLM parses query | Holds `description`, `size`, `max_price` extracted by the LLM — saved before `search_listings` is called |
+| `search_results` | After `search_listings` | Full ordered list of matching listings presented to the user for selection |
+| `selected_item` | After user confirms their item choice | The listing dict the user picked — explicitly saved to session before `suggest_outfit` is called so the input is deterministic |
+| `wardrobe` | Session init | User's wardrobe passed through to `suggest_outfit` |
+| `outfit_suggestion` | After `suggest_outfit` | LLM-generated outfit string — required input to `create_fit_card` |
+| `fit_card` | After `create_fit_card` | Shareable caption string — only populated if user expressed sharing intent |
+| `error` | On any tool or LLM failure | Descriptive error message; signals `run_agent` to return immediately without calling further tools |
 
 ---
 
@@ -92,9 +150,11 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query | |
-| suggest_outfit | Wardrobe is empty | |
-| create_fit_card | Outfit input is missing or incomplete | |
+| `search_listings` | No results match the query | LLM receives the empty list, returns a message asking the user to try different keywords, size, or price. `session["error"]` is set. No further tools are called. |
+| `suggest_outfit` | Wardrobe is empty | Not an error — the LLM is expected to return general styling advice specific to `selected_item`. Only treated as a failure if the returned string is empty or null. |
+| `suggest_outfit` | LLM call fails or returns empty string | `session["error"]` is set. Partial session is returned with `search_results` and `selected_item` intact so the user can still see the listings found. `create_fit_card` is not called. |
+| `create_fit_card` | Outfit input is missing or incomplete | Tool returns a descriptive error string directly; LLM surfaces it to the user as the final response. |
+| `create_fit_card` | LLM call fails or returns empty string | `session["error"]` is set. Partial session is returned with `selected_item` and `outfit_suggestion` intact so the user still has the outfit recommendation. |
 
 ---
 
