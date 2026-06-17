@@ -105,9 +105,9 @@ The planning loop is LLM-driven. On every user message turn, `run_agent` appends
 **Tool ordering is strictly enforced** by the system prompt and input dependencies — the LLM is instructed never to call a later tool without the prior tool's output available in the session:
 
 1. LLM first extracts `description`, `size`, and `max_price` from the user query and saves them to `session["parsed"]` before calling `search_listings`.
-2. After `search_listings` returns:
-   - **Multiple results:** present the list to the user and wait for them to select an item. `session["selected_item"]` is saved once the user confirms their choice.
-   - **Single result:** auto-select it as `session["selected_item"]` without prompting the user. Feed the item directly back to the LLM (not as a user-facing message) and let the LLM decide whether to call `suggest_outfit` immediately (if the original prompt included styling intent) or surface the result to the user first.
+2. After `search_listings` returns, the top-ranked result is auto-selected as `session["selected_item"]`. The full result list is returned to the LLM so it can present all options to the user in its response.
+
+   > **Alternative design (not implemented):** Multi-turn item selection — results are presented to the user and `run_agent` returns, waiting for the user to reply with their choice. `session["selected_item"]` is only set on the next call once the user confirms. Requires a persistent session across calls.
 3. `suggest_outfit` must complete and its result stored in `session["outfit_suggestion"]` before `create_fit_card` can be called.
 
 On any tool or LLM failure, `run_agent` sets `session["error"]` and returns immediately — the LLM does not continue calling further tools or attempt to fill in missing results.
@@ -126,7 +126,9 @@ The LLM already has the full message history including the prior error, so it na
 
 **How does information from one tool get passed to the next?**
 
-All state is stored in the session dict created by `_new_session()` at the start of a **user session** — once per conversation, not once per `run_agent` call. The same session persists across multiple user prompts so that a user can search in one message and ask for outfit advice in a later message without losing prior context. `run_agent` receives the existing session and updates it in place each turn.
+All state is stored in the session dict created by `_new_session()` at the start of each `run_agent` call — **one session per call**. Each call to `run_agent` starts fresh. The `messages` field accumulates conversation history within that single call so the LLM has full context for all tool dispatches that happen inside the loop.
+
+> **Alternative design (not implemented):** Session persists across the full user conversation — `_new_session()` is called once at app start and the same dict is passed into every `run_agent` call. This enables multi-turn flows where the user can search in one prompt and ask for outfit advice in a later prompt without losing prior results. Requires changing the `run_agent` signature to accept an existing session.
 
 Tools never call each other directly. `run_agent` reads from the session to build each tool's inputs and writes results back after each `dispatch_tool()` call.
 

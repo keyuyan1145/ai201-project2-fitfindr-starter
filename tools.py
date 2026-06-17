@@ -203,12 +203,12 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         )
 
     temperature = _get_temperature()
-    logger.debug("Calling LLM — model=llama3-8b-8192  temperature=%.2f", temperature)
+    logger.debug("Calling LLM — model=llama-3.3-70b-versatile  temperature=%.2f", temperature)
 
     try:
         client = _get_groq_client()
         response = client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
         )
@@ -274,12 +274,12 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
         f"- Captures the outfit vibe in specific terms"
     )
 
-    logger.debug("Calling LLM — model=llama3-8b-8192  temperature=%.2f", temperature)
+    logger.debug("Calling LLM — model=llama-3.3-70b-versatile  temperature=%.2f", temperature)
 
     try:
         client = _get_groq_client()
         response = client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
         )
