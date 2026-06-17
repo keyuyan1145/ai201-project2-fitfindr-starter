@@ -174,48 +174,61 @@ def _dispatch_tool(name: str, args: dict, session: dict) -> str:
             "error": None,
         })
 
-        results = search_listings(
-            description=args["description"],
-            size=args.get("size"),
-            max_price=args.get("max_price"),
-        )
+        description = args.get("description") or ""
+        if not description.strip():
+            session["error"] = "Cannot search — no description provided."
+            return session["error"]
+
+        size = args.get("size") or None
+        raw_price = args.get("max_price")
+        try:
+            max_price = float(raw_price) if raw_price is not None else None
+        except (TypeError, ValueError):
+            max_price = None
+
+        results = search_listings(description=description, size=size, max_price=max_price)
         session["search_results"] = results
 
         if not results:
-            size_part = f", size '{args['size']}'" if args.get("size") else ""
-            price_part = (
-                f", under ${args['max_price']:.2f}"
-                if args.get("max_price") is not None else ""
-            )
+            size_part = f", size '{size}'" if size else ""
+            price_part = f", under ${max_price:.2f}" if max_price is not None else ""
             session["error"] = (
-                f"No listings found for '{args['description']}'{size_part}{price_part}. "
+                f"No listings found for '{description}'{size_part}{price_part}. "
                 f"Try broader keywords, a different size, or a higher price limit."
             )
             return session["error"]
 
-        # Auto-select top result (highest relevance score)
         session["selected_item"] = results[0]
-        lines = "\n".join(
-            f"{i + 1}. {r['title']} — ${r['price']:.2f} on {r['platform']} (size {r['size']})"
-            for i, r in enumerate(results)
-        )
-        print(f"[search_listings] dispatched — {len(results)} result(s), selected: {results[0]['title']}")
+
+        def _fmt(r):
+            title = r.get("title") or "Unknown"
+            price = r.get("price")
+            price_str = f"${float(price):.2f}" if price is not None else "N/A"
+            platform = r.get("platform") or "unknown"
+            sz = r.get("size") or "?"
+            return f"{title} — {price_str} on {platform} (size {sz})"
+
+        lines = "\n".join(f"{i + 1}. {_fmt(r)}" for i, r in enumerate(results))
+        top_title = results[0].get("title") or "Unknown"
+        print(f"[search_listings] dispatched — {len(results)} result(s), selected: {top_title}")
         return (
             f"Found {len(results)} item(s). Auto-selected the top result.\n\n"
-            f"{lines}\n\nSelected: {results[0]['title']}"
+            f"{lines}\n\nSelected: {top_title}"
         )
 
     elif name == "suggest_outfit":
         session.update({"outfit_suggestion": None, "fit_card": None, "error": None})
 
-        new_item = args.get("new_item") or session.get("selected_item")
-        wardrobe = args.get("wardrobe") or session.get("wardrobe")
+        new_item = args.get("new_item") if isinstance(args.get("new_item"), dict) else None
+        new_item = new_item or session.get("selected_item")
+        wardrobe = args.get("wardrobe") if isinstance(args.get("wardrobe"), dict) else None
+        wardrobe = wardrobe or session.get("wardrobe") or {"items": []}
 
-        if not new_item:
+        if not new_item or not isinstance(new_item, dict):
             session["error"] = "Cannot suggest outfit — no item selected. Run search_listings first."
             return session["error"]
 
-        result = suggest_outfit(new_item=new_item, wardrobe=wardrobe or {"items": []})
+        result = suggest_outfit(new_item=new_item, wardrobe=wardrobe)
 
         if not result:
             titles = [r["title"] for r in session["search_results"]]
@@ -232,8 +245,8 @@ def _dispatch_tool(name: str, args: dict, session: dict) -> str:
     elif name == "create_fit_card":
         session.update({"fit_card": None, "error": None})
 
-        outfit = args.get("outfit") or session.get("outfit_suggestion") or ""
-        new_item = args.get("new_item") or session.get("selected_item") or {}
+        outfit = (args.get("outfit") if isinstance(args.get("outfit"), str) else None) or session.get("outfit_suggestion") or ""
+        new_item = (args.get("new_item") if isinstance(args.get("new_item"), dict) else None) or session.get("selected_item") or {}
 
         if not outfit:
             session["error"] = "Cannot create fit card — no outfit suggestion available. Run suggest_outfit first."
@@ -347,6 +360,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
                 session["error"] = f"Agent unavailable — LLM call failed: {e}"
                 return session
 
+        if not response or not response.choices:
+            session["error"] = "Agent unavailable — LLM returned an empty response."
+            return session
+
         msg = response.choices[0].message
         print(f"[LLM response raw] {response}")
         print(f"[LLM response] content={msg.content!r}  tool_calls={[tc.function.name for tc in msg.tool_calls] if msg.tool_calls else None}")
@@ -355,11 +372,11 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         if msg.tool_calls:
             assistant_entry["tool_calls"] = [
                 {
-                    "id": tc.id,
+                    "id": tc.id or "",
                     "type": "function",
                     "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
+                        "name": tc.function.name or "",
+                        "arguments": tc.function.arguments or "{}",
                     },
                 }
                 for tc in msg.tool_calls
@@ -371,17 +388,30 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             return session
 
         tc = msg.tool_calls[0]
-        name = tc.function.name
+        name = tc.function.name or ""
+
+        if not name:
+            session["error"] = "Agent error — LLM returned a tool call with no function name."
+            return session
 
         try:
-            args = json.loads(tc.function.arguments) or {}
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] Failed to parse args for tool {name}: {e}")
+            args = json.loads(tc.function.arguments or "{}") or {}
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"[ERROR] Failed to parse args for tool '{name}': {e}")
             session["error"] = f"Failed to parse arguments for tool '{name}'"
             return session
 
+        if not isinstance(args, dict):
+            print(f"[WARNING] Args for '{name}' parsed to non-dict ({type(args).__name__}), defaulting to {{}}")
+            args = {}
+
         print(f"[run_agent] dispatching {name} — args={args}")
-        result = _dispatch_tool(name, args, session)
+        try:
+            result = _dispatch_tool(name, args, session)
+        except Exception as e:
+            print(f"[ERROR] _dispatch_tool '{name}' raised: {type(e).__name__}: {e}")
+            session["error"] = f"Tool '{name}' failed unexpectedly: {e}"
+            return session
         dispatched.append(name)
 
         session["messages"].append({
