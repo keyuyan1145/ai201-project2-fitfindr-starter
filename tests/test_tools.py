@@ -1,12 +1,61 @@
 """
-Tests for search_listings() in tools.py.
+Tests for search_listings() and suggest_outfit() in tools.py.
 
 Run from the project root:
     pytest tests/test_tools.py -v
 """
 
 import pytest
-from tools import search_listings
+from unittest.mock import MagicMock, patch
+from tools import search_listings, suggest_outfit
+
+
+# ── shared fixtures ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def sample_item():
+    return {
+        "id": "lst_006",
+        "title": "Graphic Tee — 2003 Tour Bootleg Style",
+        "category": "tops",
+        "style_tags": ["graphic tee", "vintage", "grunge", "streetwear"],
+        "colors": ["black"],
+        "description": "Vintage-style bootleg tee with faded graphic.",
+        "price": 24.0,
+        "platform": "depop",
+    }
+
+@pytest.fixture
+def example_wardrobe():
+    return {
+        "items": [
+            {
+                "id": "w_001",
+                "name": "Baggy straight-leg jeans, dark wash",
+                "category": "bottoms",
+                "colors": ["dark blue", "indigo"],
+                "style_tags": ["denim", "streetwear", "baggy"],
+            },
+            {
+                "id": "w_007",
+                "name": "Chunky white sneakers",
+                "category": "shoes",
+                "colors": ["white"],
+                "style_tags": ["sneakers", "chunky", "streetwear"],
+            },
+        ]
+    }
+
+@pytest.fixture
+def empty_wardrobe():
+    return {"items": []}
+
+def _mock_client(content="Here is your outfit suggestion."):
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = content
+    client = MagicMock()
+    client.chat.completions.create.return_value = mock_response
+    return client
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -163,3 +212,92 @@ def test_size_and_price_combined():
 def test_all_filters_too_strict_returns_empty():
     results = search_listings("ballgown", size="XXS", max_price=5.0)
     assert results == []
+
+
+# ── suggest_outfit: happy paths ────────────────────────────────────────────────
+
+def test_suggest_outfit_with_wardrobe_returns_string(sample_item, example_wardrobe):
+    with patch("tools._get_groq_client", return_value=_mock_client()):
+        result = suggest_outfit(sample_item, example_wardrobe)
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+def test_suggest_outfit_empty_wardrobe_returns_string(sample_item, empty_wardrobe):
+    with patch("tools._get_groq_client", return_value=_mock_client()):
+        result = suggest_outfit(sample_item, empty_wardrobe)
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+def test_suggest_outfit_returns_llm_content(sample_item, example_wardrobe):
+    with patch("tools._get_groq_client", return_value=_mock_client("Wear it with baggy jeans.")):
+        result = suggest_outfit(sample_item, example_wardrobe)
+    assert result == "Wear it with baggy jeans."
+
+
+# ── suggest_outfit: prompt content ────────────────────────────────────────────
+
+def test_suggest_outfit_prompt_includes_item_title(sample_item, example_wardrobe):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        suggest_outfit(sample_item, example_wardrobe)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert sample_item["title"] in prompt
+
+def test_suggest_outfit_prompt_includes_wardrobe_items(sample_item, example_wardrobe):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        suggest_outfit(sample_item, example_wardrobe)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    for item in example_wardrobe["items"]:
+        assert item["name"] in prompt
+
+def test_suggest_outfit_empty_wardrobe_prompt_excludes_wardrobe_items(sample_item, empty_wardrobe):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        suggest_outfit(sample_item, empty_wardrobe)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    # Empty wardrobe prompt should not reference specific wardrobe pieces
+    assert "They already own" not in prompt
+
+def test_suggest_outfit_empty_wardrobe_prompt_asks_for_general_advice(sample_item, empty_wardrobe):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        suggest_outfit(sample_item, empty_wardrobe)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert "don't have a specific wardrobe" in prompt
+
+
+# ── suggest_outfit: error and edge cases ──────────────────────────────────────
+
+def test_suggest_outfit_llm_exception_returns_empty_string(sample_item, example_wardrobe):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = Exception("API unavailable")
+    with patch("tools._get_groq_client", return_value=client):
+        result = suggest_outfit(sample_item, example_wardrobe)
+    assert result == ""
+
+def test_suggest_outfit_llm_returns_empty_content_returns_empty_string(sample_item, example_wardrobe):
+    with patch("tools._get_groq_client", return_value=_mock_client("")):
+        result = suggest_outfit(sample_item, example_wardrobe)
+    assert result == ""
+
+def test_suggest_outfit_llm_returns_whitespace_only_returns_empty_string(sample_item, example_wardrobe):
+    with patch("tools._get_groq_client", return_value=_mock_client("   \n  ")):
+        result = suggest_outfit(sample_item, example_wardrobe)
+    assert result == ""
+
+def test_suggest_outfit_missing_item_fields_does_not_raise(empty_wardrobe):
+    # Item with no optional fields should not crash
+    minimal_item = {"title": "Plain Tee"}
+    with patch("tools._get_groq_client", return_value=_mock_client("Some advice.")):
+        result = suggest_outfit(minimal_item, empty_wardrobe)
+    assert isinstance(result, str)
+
+def test_suggest_outfit_does_not_raise_on_llm_failure(sample_item, example_wardrobe):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError("timeout")
+    with patch("tools._get_groq_client", return_value=client):
+        try:
+            suggest_outfit(sample_item, example_wardrobe)
+        except Exception as e:
+            pytest.fail(f"suggest_outfit raised unexpectedly: {e}")

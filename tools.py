@@ -12,6 +12,7 @@ Tools:
     create_fit_card(outfit, new_item)               → str
 """
 
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -20,6 +21,8 @@ from groq import Groq
 from utils.data_loader import load_listings
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -32,6 +35,16 @@ def _get_groq_client():
             "GROQ_API_KEY not set. Add it to a .env file in the project root."
         )
     return Groq(api_key=api_key)
+
+
+def _get_temperature() -> float:
+    """Read LLM_TEMPERATURE from env, defaulting to 0.7."""
+    raw = os.environ.get("LLM_TEMPERATURE", "0.7")
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid LLM_TEMPERATURE=%r, falling back to 0.7", raw)
+        return 0.7
 
 
 # ── Tool 1: search_listings ───────────────────────────────────────────────────
@@ -69,18 +82,29 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
+    logger.debug(
+        "search_listings called — description=%r  size=%r  max_price=%r",
+        description, size, max_price,
+    )
+
     listings = load_listings()
+    logger.debug("Loaded %d listings from dataset", len(listings))
 
     if max_price is not None:
         listings = [l for l in listings if l["price"] <= max_price]
+        logger.debug("After price filter (≤$%.2f): %d listings remain", max_price, len(listings))
 
     if size is not None:
         size_query = size.strip().lower()
         listings = [l for l in listings if size_query in l["size"].lower()]
+        logger.debug("After size filter (%r): %d listings remain", size_query, len(listings))
 
     keywords = [w.lower() for w in description.split() if w.strip()]
     if not keywords:
+        logger.debug("No keywords extracted from description — returning empty list")
         return []
+
+    logger.debug("Scoring against keywords: %s", keywords)
 
     scored = []
     for listing in listings:
@@ -98,7 +122,18 @@ def search_listings(
             scored.append((score, listing))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [listing for _, listing in scored]
+    results = [listing for _, listing in scored]
+
+    logger.info(
+        "search_listings returning %d result(s) for %r",
+        len(results), description,
+    )
+    if results:
+        logger.debug("Top result: %s (id=%s)", results[0]["title"], results[0]["id"])
+    else:
+        logger.debug("No results matched — caller should prompt user to retry")
+
+    return results
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -128,8 +163,61 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    item_title = new_item.get("title", "Unknown")
+    wardrobe_items = wardrobe.get("items", [])
+
+    logger.debug(
+        "suggest_outfit called — item=%r  wardrobe_size=%d",
+        item_title, len(wardrobe_items),
+    )
+
+    item_summary = (
+        f"Title: {new_item.get('title', 'Unknown')}\n"
+        f"Category: {new_item.get('category', 'Unknown')}\n"
+        f"Style: {', '.join(new_item.get('style_tags', []))}\n"
+        f"Colors: {', '.join(new_item.get('colors', []))}\n"
+        f"Description: {new_item.get('description', '')}"
+    )
+
+    if not wardrobe_items:
+        logger.debug("Empty wardrobe — using general styling prompt")
+        prompt = (
+            f"You are a fashion stylist specializing in thrifted clothing.\n"
+            f"A user is considering buying this thrifted item:\n{item_summary}\n\n"
+            f"They don't have a specific wardrobe to work with yet. "
+            f"Suggest 1-2 outfit ideas for this item: what types of pieces pair well with it, "
+            f"what vibe it suits, and how to style it."
+        )
+    else:
+        logger.debug("Wardrobe has %d item(s) — using wardrobe-specific prompt", len(wardrobe_items))
+        wardrobe_lines = "\n".join(
+            f"- {w['name']} ({w['category']}, {', '.join(w.get('colors', []))})"
+            for w in wardrobe_items
+        )
+        prompt = (
+            f"You are a fashion stylist specializing in thrifted clothing.\n"
+            f"A user is considering buying this thrifted item:\n{item_summary}\n\n"
+            f"They already own these pieces:\n{wardrobe_lines}\n\n"
+            f"Suggest 1-2 complete outfit combinations using the new item and specific pieces "
+            f"from their wardrobe. Name the exact wardrobe pieces and explain the vibe."
+        )
+
+    temperature = _get_temperature()
+    logger.debug("Calling LLM — model=llama3-8b-8192  temperature=%.2f", temperature)
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+        )
+        result = response.choices[0].message.content.strip()
+        logger.info("suggest_outfit succeeded — response length=%d chars", len(result))
+        return result
+    except Exception as e:
+        logger.error("suggest_outfit LLM call failed — %s: %s", type(e).__name__, e)
+        return ""
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
