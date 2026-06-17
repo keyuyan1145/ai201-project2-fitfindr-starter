@@ -213,6 +213,8 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
             temperature=temperature,
         )
         result = response.choices[0].message.content.strip()
+        label = "👗 Styled with your wardrobe:" if wardrobe_items else "✨ General styling advice:"
+        result = f"{label}\n\n{result}"
         logger.info("suggest_outfit succeeded — response length=%d chars", len(result))
         return result
     except Exception as e:
