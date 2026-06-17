@@ -132,6 +132,7 @@ Every `run_agent()` call creates a fresh session dict — one session per query 
 ---
 
 ## Error Handling
+<img width="2357" height="1257" alt="0ef8d25751f565d0199577e652b89f70" src="https://github.com/user-attachments/assets/8e33eddd-a33d-4bca-bff1-8326eeaba13a" />
 
 ### `search_listings`
 
