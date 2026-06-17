@@ -150,11 +150,11 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| `search_listings` | No results match the query | LLM receives the empty list, returns a message asking the user to try different keywords, size, or price. `session["error"]` is set. No further tools are called. |
+| `search_listings` | No results match the query | `session["error"]` is set. No further tools are called. Error message: `"No listings found for '[description]'[, size '[size]'][, under $[max_price]]. Try broader keywords, a different size, or a higher price limit."` |
 | `suggest_outfit` | Wardrobe is empty | Not an error — the LLM is expected to return general styling advice specific to `selected_item`. Only treated as a failure if the returned string is empty or null. |
-| `suggest_outfit` | LLM call fails or returns empty string | `session["error"]` is set. Partial session is returned with `search_results` and `selected_item` intact so the user can still see the listings found. `create_fit_card` is not called. |
-| `create_fit_card` | Outfit input is missing or incomplete | Tool returns a descriptive error string directly; LLM surfaces it to the user as the final response. |
-| `create_fit_card` | LLM call fails or returns empty string | `session["error"]` is set. Partial session is returned with `selected_item` and `outfit_suggestion` intact so the user still has the outfit recommendation. |
+| `suggest_outfit` | LLM call fails or returns empty string | `session["error"]` is set. `create_fit_card` is not called. Partial session returned with `search_results` and `selected_item` intact. Error message: `"Outfit suggestion unavailable right now — the styling service didn't respond. Here are the listings we found: [search_results titles]."` |
+| `create_fit_card` | Outfit input is missing or incomplete | Tool returns an error string directly without calling the LLM. Error message: `"Cannot create a fit card — no outfit suggestion is available. Ask for an outfit suggestion first."` |
+| `create_fit_card` | LLM call fails or returns empty string | `session["error"]` is set. Partial session returned with `selected_item` and `outfit_suggestion` intact. Error message: `"Fit card generation unavailable right now — the styling service didn't respond. Your outfit suggestion is still available above."` |
 
 ---
 
