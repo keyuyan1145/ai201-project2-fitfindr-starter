@@ -249,5 +249,43 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        logger.warning("create_fit_card called with empty outfit string — returning error message")
+        return "Cannot create a fit card — no outfit suggestion is available. Ask for an outfit suggestion first."
+
+    item_name = new_item.get("title", "this thrifted find")
+    price = new_item.get("price")
+    platform = new_item.get("platform", "a thrift platform")
+    price_str = f"${price:.2f}" if price is not None else "a great price"
+
+    temperature = _get_temperature()
+    logger.debug(
+        "create_fit_card called — item=%r  platform=%r  price=%s  outfit_length=%d  temperature=%.2f",
+        item_name, platform, price_str, len(outfit), temperature,
+    )
+
+    prompt = (
+        f"You are writing an Instagram/TikTok caption for a thrift outfit post.\n\n"
+        f"Thrifted item: {item_name} — found on {platform} for {price_str}\n"
+        f"Outfit: {outfit}\n\n"
+        f"Write a 2-4 sentence caption that:\n"
+        f"- Feels casual and authentic, like a real OOTD post (not a product description)\n"
+        f"- Mentions the item name, price, and platform naturally (once each)\n"
+        f"- Captures the outfit vibe in specific terms"
+    )
+
+    logger.debug("Calling LLM — model=llama3-8b-8192  temperature=%.2f", temperature)
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+        )
+        result = response.choices[0].message.content.strip()
+        logger.info("create_fit_card succeeded — response length=%d chars", len(result))
+        return result
+    except Exception as e:
+        logger.error("create_fit_card LLM call failed — %s: %s", type(e).__name__, e)
+        return ""

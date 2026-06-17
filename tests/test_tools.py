@@ -1,5 +1,5 @@
 """
-Tests for search_listings() and suggest_outfit() in tools.py.
+Tests for search_listings(), suggest_outfit(), and create_fit_card() in tools.py.
 
 Run from the project root:
     pytest tests/test_tools.py -v
@@ -7,7 +7,7 @@ Run from the project root:
 
 import pytest
 from unittest.mock import MagicMock, patch
-from tools import search_listings, suggest_outfit
+from tools import search_listings, suggest_outfit, create_fit_card
 
 
 # ── shared fixtures ────────────────────────────────────────────────────────────
@@ -301,3 +301,108 @@ def test_suggest_outfit_does_not_raise_on_llm_failure(sample_item, example_wardr
             suggest_outfit(sample_item, example_wardrobe)
         except Exception as e:
             pytest.fail(f"suggest_outfit raised unexpectedly: {e}")
+
+
+# ── create_fit_card: happy paths ───────────────────────────────────────────────
+
+OUTFIT = "Graphic tee tucked into baggy dark-wash jeans with chunky white sneakers."
+
+def test_create_fit_card_returns_string(sample_item):
+    with patch("tools._get_groq_client", return_value=_mock_client("Great thrift find!")):
+        result = create_fit_card(OUTFIT, sample_item)
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+def test_create_fit_card_returns_llm_content(sample_item):
+    with patch("tools._get_groq_client", return_value=_mock_client("Thrifted this gem on depop.")):
+        result = create_fit_card(OUTFIT, sample_item)
+    assert result == "Thrifted this gem on depop."
+
+
+# ── create_fit_card: prompt content ───────────────────────────────────────────
+
+def test_create_fit_card_prompt_includes_item_title(sample_item):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        create_fit_card(OUTFIT, sample_item)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert sample_item["title"] in prompt
+
+def test_create_fit_card_prompt_includes_price(sample_item):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        create_fit_card(OUTFIT, sample_item)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert "24.00" in prompt
+
+def test_create_fit_card_prompt_includes_platform(sample_item):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        create_fit_card(OUTFIT, sample_item)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert sample_item["platform"] in prompt
+
+def test_create_fit_card_prompt_includes_outfit(sample_item):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        create_fit_card(OUTFIT, sample_item)
+    prompt = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert OUTFIT in prompt
+
+
+# ── create_fit_card: empty outfit guard ───────────────────────────────────────
+
+def test_create_fit_card_empty_outfit_returns_error_string(sample_item):
+    result = create_fit_card("", sample_item)
+    assert "Cannot create a fit card" in result
+
+def test_create_fit_card_whitespace_outfit_returns_error_string(sample_item):
+    result = create_fit_card("   \n  ", sample_item)
+    assert "Cannot create a fit card" in result
+
+def test_create_fit_card_empty_outfit_does_not_call_llm(sample_item):
+    client = _mock_client()
+    with patch("tools._get_groq_client", return_value=client):
+        create_fit_card("", sample_item)
+    client.chat.completions.create.assert_not_called()
+
+
+# ── create_fit_card: error and edge cases ─────────────────────────────────────
+
+def test_create_fit_card_llm_exception_returns_empty_string(sample_item):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = Exception("API unavailable")
+    with patch("tools._get_groq_client", return_value=client):
+        result = create_fit_card(OUTFIT, sample_item)
+    assert result == ""
+
+def test_create_fit_card_llm_returns_empty_content_returns_empty_string(sample_item):
+    with patch("tools._get_groq_client", return_value=_mock_client("")):
+        result = create_fit_card(OUTFIT, sample_item)
+    assert result == ""
+
+def test_create_fit_card_llm_returns_whitespace_only_returns_empty_string(sample_item):
+    with patch("tools._get_groq_client", return_value=_mock_client("  \n  ")):
+        result = create_fit_card(OUTFIT, sample_item)
+    assert result == ""
+
+def test_create_fit_card_missing_price_does_not_crash(sample_item):
+    item_no_price = {k: v for k, v in sample_item.items() if k != "price"}
+    with patch("tools._get_groq_client", return_value=_mock_client("Nice fit!")):
+        result = create_fit_card(OUTFIT, item_no_price)
+    assert isinstance(result, str)
+
+def test_create_fit_card_missing_platform_does_not_crash(sample_item):
+    item_no_platform = {k: v for k, v in sample_item.items() if k != "platform"}
+    with patch("tools._get_groq_client", return_value=_mock_client("Nice fit!")):
+        result = create_fit_card(OUTFIT, item_no_platform)
+    assert isinstance(result, str)
+
+def test_create_fit_card_does_not_raise_on_llm_failure(sample_item):
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError("timeout")
+    with patch("tools._get_groq_client", return_value=client):
+        try:
+            create_fit_card(OUTFIT, sample_item)
+        except Exception as e:
+            pytest.fail(f"create_fit_card raised unexpectedly: {e}")
