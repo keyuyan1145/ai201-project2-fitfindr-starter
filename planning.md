@@ -231,7 +231,27 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 **Milestone 3 — Individual tool implementations:**
 
+**Tool: Claude Code**
+
+Each tool will be implemented one at a time in `tools.py`.
+
+- **`search_listings`** — Input: Tool 1 spec (description, size, max_price parameters; return value; failure mode) from the Tools section, plus the inline docstring and comments inside `tools.py`. Claude Code will produce a function that loads listings via `load_listings()`, filters by `max_price` and `size` (case-insensitive substring), scores each listing by keyword overlap against `description`, drops zero-score results, and returns the list sorted by score descending. Verification: run tests with (1) a broad keyword that matches multiple items, (2) a size + price filter that narrows the set, (3) a query that matches nothing — confirm empty list is returned and no exception is raised.
+
+- **`suggest_outfit`** — Input: Tool 2 spec (new_item, wardrobe parameters; return value; empty-wardrobe behavior) from the Tools section, the Error Handling table row for this tool, and the wardrobe schema from `data/wardrobe_schema.json`. Claude Code will produce a function that builds a prompt using `new_item` fields and wardrobe items, calls the Groq LLM, and returns the response string. For empty wardrobe, the prompt asks for general styling advice for the specific item. Verification: run tests with (1) the example wardrobe, (2) an empty wardrobe — confirm a non-empty string is returned in both cases, and that the wardrobe items or the item name appear in the output.
+
+- **`create_fit_card`** — Input: Tool 3 spec (outfit, new_item parameters; tone requirements; failure mode) from the Tools section and the Error Handling table row for this tool. Claude Code will produce a function that guards against empty outfit string, builds a prompt with item name/price/platform and the outfit description, calls the Groq LLM at higher temperature, and returns the caption string. Verification: run tests with (1) a valid outfit string and item dict — confirm item name, price, and platform appear in the output; (2) an empty outfit string — confirm a descriptive error string is returned rather than an exception.
+
+---
+
 **Milestone 4 — Planning loop and state management:**
+
+**Tool: Claude Code**
+
+Input: the full Planning Loop section, State Management section, Architecture diagram, Error Handling table, and the inline docstring and step-by-step comments inside `run_agent()` in `agent.py`. Claude Code will be asked to implement `run_agent()` and `dispatch_tool()` to match the design exactly — LLM-driven loop, conditional tool dispatch, session persisting across turns, scoped downstream-clear on retry, and early/partial returns on error.
+
+Expected output: a working `run_agent()` that (1) appends messages and calls the LLM each turn, (2) dispatches only the tools the LLM requests, (3) enforces tool ordering via the system prompt, (4) auto-selects `selected_item` when `search_listings` returns exactly one result, (5) clears downstream session fields before retrying a tool, and (6) returns the session with partial results and `error` set on any failure.
+
+Verification: run tests covering (1) full happy path — search → user selects item → outfit → fit card, (2) search returns no results — confirm error is set and no further tools are called, (3) single search result — confirm item is auto-selected and LLM is called again without user input, (4) `suggest_outfit` failure — confirm session contains `search_results` and `selected_item` but `outfit_suggestion` is None and `error` is set, (5) multi-turn retry after error — confirm downstream fields are cleared and fresh results are stored, (6) user asks only to search with no outfit intent — confirm `suggest_outfit` is never called.
 
 ---
 
